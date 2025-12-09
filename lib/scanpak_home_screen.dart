@@ -1,11 +1,13 @@
 import 'dart:convert';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'utils/scanpak_auth.dart';
+import 'utils/scanpak_user_management.dart';
 
 class ScanpakHomeScreen extends StatefulWidget {
   const ScanpakHomeScreen({super.key});
@@ -21,17 +23,33 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
 
   final TextEditingController _parcelFilterController = TextEditingController();
   final TextEditingController _userFilterController = TextEditingController();
+  final TextEditingController _statsUserFilterController = TextEditingController();
 
   DateTime? _selectedDate;
   TimeOfDay? _startTime;
   TimeOfDay? _endTime;
 
+  DateTime? _statsStartDate;
+  DateTime? _statsEndDate;
+
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
   late final TabController _tabController;
   String? _userName;
+  ScanpakUserRole? _userRole;
   String _status = '';
   bool _isLoadingHistory = false;
   List<_ScanpakRecord> _records = const [];
   List<_ScanpakRecord> _filteredRecords = const [];
+  List<_ScanpakRecord> _statsRecords = const [];
+  Map<String, int> _userStats = const {};
+  Map<DateTime, int> _dailyStats = const {};
+  _ScanpakRecord? _latestStatsRecord;
+  String _topUser = '—';
+  int _topUserCount = 0;
+
+  bool get _isOperator => _userRole == ScanpakUserRole.operator;
+  bool get _isAdmin => _userRole == ScanpakUserRole.admin;
 
   @override
   void initState() {
@@ -42,6 +60,9 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
           _focusInput();
         }
       });
+    final now = DateTime.now();
+    _statsEndDate = DateTime(now.year, now.month, now.day);
+    _statsStartDate = _statsEndDate?.subtract(const Duration(days: 6));
     _loadUser();
     _fetchHistory();
     WidgetsBinding.instance.addPostFrameCallback((_) => _focusInput());
@@ -54,12 +75,21 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     _numberFocus.dispose();
     _parcelFilterController.dispose();
     _userFilterController.dispose();
+    _statsUserFilterController.dispose();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
   Future<void> _loadUser() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() => _userName = prefs.getString('scanpak_user_name'));
+    setState(() {
+      _userName = prefs.getString('scanpak_user_name');
+      final storedRole = prefs.getString('scanpak_user_role');
+      _userRole = storedRole == null ? null : parseScanpakUserRole(storedRole);
+    });
+    _ensureDefaultUserFilters();
+    _applyFilters();
+    _applyStatsFilters();
   }
 
   Future<void> _fetchHistory() async {
@@ -100,6 +130,7 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
         _records = parsed;
       });
       _applyFilters();
+      _applyStatsFilters();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -117,8 +148,52 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     }
   }
 
+  void _ensureDefaultUserFilters() {
+    if (_isOperator && _userName?.isNotEmpty == true) {
+      if (_userFilterController.text != _userName) {
+        _userFilterController.text = _userName!;
+      }
+      if (_statsUserFilterController.text != _userName) {
+        _statsUserFilterController.text = _userName!;
+      }
+      return;
+    }
+
+    if (_isAdmin) {
+      return;
+    }
+
+    if (_userName?.isNotEmpty == true) {
+      if (_userFilterController.text.isEmpty) {
+        _userFilterController.text = _userName!;
+      }
+      if (_statsUserFilterController.text.isEmpty) {
+        _statsUserFilterController.text = _userName!;
+      }
+    }
+  }
+
+  String _effectiveUserFilter(TextEditingController controller) {
+    if (_isOperator && _userName?.isNotEmpty == true) {
+      if (controller.text != _userName) {
+        controller.text = _userName!;
+      }
+      return _userName!;
+    }
+    return controller.text.trim();
+  }
+
   String _sanitizeNumber(String value) {
     return value.replaceAll(RegExp(r'[^0-9]'), '');
+  }
+
+  Future<void> _playSuccessSound() async {
+    try {
+      await _audioPlayer.stop();
+      await _audioPlayer.play(AssetSource('sounds/success.wav'));
+    } catch (_) {
+      // ignore audio issues silently
+    }
   }
 
   void _onChanged(String value) {
@@ -147,7 +222,9 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
         _status =
             'Збережено для ${record.user} о ${DateFormat('HH:mm').format(record.timestamp.toLocal())}';
       });
+      _playSuccessSound();
       _applyFilters();
+      _applyStatsFilters();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -193,6 +270,7 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
   }
 
   void _applyFilters() {
+    _ensureDefaultUserFilters();
     List<_ScanpakRecord> filtered = List.of(_records);
 
     if (_parcelFilterController.text.isNotEmpty) {
@@ -201,11 +279,12 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
           .toList();
     }
 
-    if (_userFilterController.text.isNotEmpty) {
+    final userFilter = _effectiveUserFilter(_userFilterController);
+    if (userFilter.isNotEmpty) {
       filtered = filtered
           .where(
             (r) => r.user.toLowerCase().contains(
-              _userFilterController.text.trim().toLowerCase(),
+              userFilter.toLowerCase(),
             ),
           )
           .toList();
@@ -246,6 +325,79 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     }
 
     setState(() => _filteredRecords = filtered);
+  }
+
+  void _applyStatsFilters() {
+    _ensureDefaultUserFilters();
+    List<_ScanpakRecord> filtered = List.of(_records);
+
+    final userFilter = _effectiveUserFilter(_statsUserFilterController);
+    if (userFilter.isNotEmpty) {
+      filtered = filtered
+          .where(
+            (r) => r.user.toLowerCase().contains(userFilter.toLowerCase()),
+          )
+          .toList();
+    }
+
+    if (_statsStartDate != null) {
+      final start = DateTime(
+        _statsStartDate!.year,
+        _statsStartDate!.month,
+        _statsStartDate!.day,
+      );
+      filtered = filtered
+          .where((r) => r.timestamp.toLocal().isAfter(start) ||
+              r.timestamp.toLocal().isAtSameMomentAs(start))
+          .toList();
+    }
+
+    if (_statsEndDate != null) {
+      final end = DateTime(
+        _statsEndDate!.year,
+        _statsEndDate!.month,
+        _statsEndDate!.day + 1,
+      );
+      filtered =
+          filtered.where((r) => r.timestamp.toLocal().isBefore(end)).toList();
+    }
+
+    filtered.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    final userCounts = <String, int>{};
+    final dailyCounts = <DateTime, int>{};
+
+    for (final record in filtered) {
+      userCounts.update(record.user, (value) => value + 1, ifAbsent: () => 1);
+
+      final dateKey = DateTime(
+        record.timestamp.toLocal().year,
+        record.timestamp.toLocal().month,
+        record.timestamp.toLocal().day,
+      );
+      dailyCounts.update(dateKey, (value) => value + 1, ifAbsent: () => 1);
+    }
+
+    final topUserEntry = userCounts.entries
+        .fold<MapEntry<String, int>?>(null, (previous, element) {
+      if (previous == null || element.value > previous.value) {
+        return element;
+      }
+      return previous;
+    });
+
+    final limitedDaily = (dailyCounts.entries.toList()
+          ..sort((a, b) => b.key.compareTo(a.key)))
+        .take(7);
+
+    setState(() {
+      _statsRecords = filtered;
+      _userStats = userCounts;
+      _dailyStats = Map.fromEntries(limitedDaily);
+      _latestStatsRecord = filtered.isEmpty ? null : filtered.first;
+      _topUser = topUserEntry?.key ?? '—';
+      _topUserCount = topUserEntry?.value ?? 0;
+    });
   }
 
   Future<void> _pickDate() async {
@@ -292,17 +444,23 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
 
   void _clearFilters() {
     _parcelFilterController.clear();
-    _userFilterController.clear();
+    _userFilterController.text = _isOperator ? (_userName ?? '') : '';
     _selectedDate = null;
     _startTime = null;
     _endTime = null;
+    _statsUserFilterController.text = _isOperator ? (_userName ?? '') : '';
+    final now = DateTime.now();
+    _statsEndDate = DateTime(now.year, now.month, now.day);
+    _statsStartDate = _statsEndDate?.subtract(const Duration(days: 6));
     _applyFilters();
+    _applyStatsFilters();
   }
 
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('scanpak_token');
     await prefs.remove('scanpak_user_name');
+    await prefs.remove('scanpak_user_role');
     if (!mounted) return;
     Navigator.pushReplacementNamed(context, '/');
   }
@@ -432,7 +590,13 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               _filterField(_parcelFilterController, 'Номер'),
-              _filterField(_userFilterController, 'Користувач'),
+              _filterField(
+                _userFilterController,
+                'Користувач',
+                enabled: !_isOperator,
+                helperText:
+                    _isOperator ? 'Доступно лише власні скани' : null,
+              ),
               ElevatedButton.icon(
                 onPressed: _pickDate,
                 icon: const Icon(Icons.date_range),
@@ -532,27 +696,303 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     );
   }
 
-  Widget _filterField(TextEditingController controller, String label) {
+  Widget _filterField(
+    TextEditingController controller,
+    String label, {
+    bool enabled = true,
+    String? helperText,
+  }) {
     return SizedBox(
       width: 150,
       child: TextField(
         controller: controller,
         onChanged: (_) => _applyFilters(),
+        enabled: enabled,
         decoration: InputDecoration(
           labelText: label,
           border: const OutlineInputBorder(),
           isDense: true,
+          helperText: helperText,
         ),
       ),
     );
   }
 
   Widget _buildStatsTab(ThemeData theme) {
-    return Center(
-      child: Text(
-        'Статистика користувача — в розробці',
-        style: theme.textTheme.titleMedium,
-        textAlign: TextAlign.center,
+    final dateRangeLabel = _statsStartDate == null && _statsEndDate == null
+        ? 'Усі дні'
+        : '${_statsStartDate == null ? '—' : DateFormat('dd.MM.yyyy').format(_statsStartDate!)} – ${_statsEndDate == null ? '—' : DateFormat('dd.MM.yyyy').format(_statsEndDate!)}';
+
+    final sortedUsers = _userStats.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final sortedDaily = _dailyStats.entries.toList()
+      ..sort((a, b) => b.key.compareTo(a.key));
+
+    return _isLoadingHistory
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.bar_chart, color: Colors.blue),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Статистика сканувань',
+                      style: theme.textTheme.titleLarge,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 200,
+                      child: TextField(
+                        controller: _statsUserFilterController,
+                        enabled: !_isOperator,
+                        onChanged: (_) => _applyStatsFilters(),
+                        decoration: InputDecoration(
+                          labelText: 'Користувач',
+                          helperText: _isOperator
+                              ? 'Показано лише ваші скани'
+                              : 'Залиште порожнім щоб бачити всіх',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => _pickStatsDate(isStart: true),
+                      icon: const Icon(Icons.calendar_today),
+                      label: Text(
+                        _statsStartDate == null
+                            ? 'Початок'
+                            : DateFormat('dd.MM.yyyy').format(_statsStartDate!),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: () => _pickStatsDate(isStart: false),
+                      icon: const Icon(Icons.event),
+                      label: Text(
+                        _statsEndDate == null
+                            ? 'Кінець'
+                            : DateFormat('dd.MM.yyyy').format(_statsEndDate!),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Оновити дані',
+                      onPressed: _fetchHistory,
+                      icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Діапазон: $dateRangeLabel',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _statCard(
+                      theme: theme,
+                      title: 'Всього сканів',
+                      value: _statsRecords.length.toString(),
+                      icon: Icons.inventory_2,
+                      color: Colors.indigo,
+                    ),
+                    _statCard(
+                      theme: theme,
+                      title: 'Унікальних користувачів',
+                      value: _userStats.length.toString(),
+                      icon: Icons.people_alt,
+                      color: Colors.teal,
+                    ),
+                    _statCard(
+                      theme: theme,
+                      title: 'Лідер',
+                      value: _topUserCount == 0
+                          ? '—'
+                          : '$_topUser ($_topUserCount)',
+                      icon: Icons.emoji_events,
+                      color: Colors.orange,
+                    ),
+                    _statCard(
+                      theme: theme,
+                      title: 'Останній скан',
+                      value: _latestStatsRecord == null
+                          ? '—'
+                          : DateFormat('dd.MM • HH:mm')
+                              .format(_latestStatsRecord!.timestamp.toLocal()),
+                      icon: Icons.access_time,
+                      color: Colors.green,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.leaderboard, color: Colors.blue),
+                            const SizedBox(width: 8),
+                            Text(
+                              'ТОП користувачів',
+                              style: theme.textTheme.titleMedium,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (sortedUsers.isEmpty)
+                          const Text('Немає даних для відображення')
+                        else
+                          Column(
+                            children: sortedUsers.take(5).map((entry) {
+                              final index = sortedUsers.indexOf(entry) + 1;
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.blue.withOpacity(0.1),
+                                  child: Text('$index'),
+                                ),
+                                title: Text(entry.key),
+                                trailing: Text(
+                                  '${entry.value} скан.',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.today, color: Colors.purple),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Активність по днях',
+                              style: theme.textTheme.titleMedium,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (sortedDaily.isEmpty)
+                          const Text('Сканування відсутні')
+                        else
+                          Column(
+                            children: sortedDaily.map((entry) {
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(
+                                  DateFormat('dd.MM.yyyy').format(entry.key),
+                                ),
+                                trailing: Text(
+                                  '${entry.value} скан.',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+  }
+
+  Future<void> _pickStatsDate({required bool isStart}) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: isStart
+          ? (_statsStartDate ?? now)
+          : (_statsEndDate ?? _statsStartDate ?? now),
+      firstDate: DateTime(2024),
+      lastDate: now,
+      locale: const Locale('uk', 'UA'),
+    );
+
+    if (picked != null) {
+      setState(() {
+        if (isStart) {
+          _statsStartDate = picked;
+        } else {
+          _statsEndDate = picked;
+        }
+      });
+      _applyStatsFilters();
+    }
+  }
+
+  Widget _statCard({
+    required ThemeData theme,
+    required String title,
+    required String value,
+    required IconData icon,
+    required MaterialColor color,
+  }) {
+    return SizedBox(
+      width: 220,
+      child: Card(
+        color: color.withOpacity(0.08),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, color: color),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                value,
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  color: color.shade700,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -572,11 +1012,36 @@ class _ScanpakRecord {
   static _ScanpakRecord fromJson(Map<String, dynamic> map) {
     final number = map['parcel_number']?.toString() ?? '';
     final user = map['username']?.toString() ?? '';
-    final timestamp = DateTime.tryParse(map['scanned_at']?.toString() ?? '');
-    if (number.isEmpty || timestamp == null) {
+    final timestampRaw = map['scanned_at']?.toString() ?? '';
+    final timestamp = _parseTimestamp(timestampRaw);
+    if (number.isEmpty) {
       throw const FormatException('Некоректні дані сканування');
     }
     return _ScanpakRecord(number: number, user: user, timestamp: timestamp);
+  }
+
+  static DateTime _parseTimestamp(String raw) {
+    final parsed = DateTime.tryParse(raw.trim());
+    if (parsed == null) {
+      throw const FormatException('Некоректні дані сканування');
+    }
+
+    final hasTimezone =
+        RegExp(r'(Z|[+-]\d{2}:?\d{2})$').hasMatch(raw.trim());
+    final utcTime = hasTimezone
+        ? parsed.toUtc()
+        : DateTime.utc(
+            parsed.year,
+            parsed.month,
+            parsed.day,
+            parsed.hour,
+            parsed.minute,
+            parsed.second,
+            parsed.millisecond,
+            parsed.microsecond,
+          );
+
+    return utcTime.toLocal();
   }
 
   static _ScanpakRecord fromResponse(String raw) {
