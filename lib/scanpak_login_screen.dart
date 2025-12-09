@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'scanpak_admin_panel_screen.dart';
 import 'utils/scanpak_auth.dart';
+import 'utils/scanpak_user_management.dart';
 
 class ScanpakLoginScreen extends StatefulWidget {
   const ScanpakLoginScreen({super.key});
@@ -76,10 +77,15 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
       }
 
       final resolvedSurname = data['surname']?.toString() ?? surname;
+      final rawRole = data['role']?.toString();
+      final role = rawRole == null ? null : parseScanpakUserRole(rawRole);
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('scanpak_token', token);
       await prefs.setString('scanpak_user_name', resolvedSurname);
+      if (role != null) {
+        await prefs.setString('scanpak_user_role', role.name);
+      }
 
       if (!mounted) return;
       Navigator.pushReplacementNamed(context, '/scanpak/home');
