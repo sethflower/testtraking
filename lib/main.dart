@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'login_screen.dart';
 import 'scanner_screen.dart';
+import 'start_screen.dart';
+import 'scanpak_home_screen.dart';
+import 'scanpak_login_screen.dart';
 import 'username_screen.dart';
 import 'history_screen.dart';
 import 'errors_screen.dart';
@@ -41,12 +44,15 @@ class MyApp extends StatelessWidget {
       // ✅ Маршруты приложения
       initialRoute: '/',
       routes: {
-        '/': (context) => const LoginScreen(),
+        '/': (context) => const StartScreen(),
+        '/login': (context) => const LoginScreen(),
         '/username': (context) => UserNameScreen(),
         '/scanner': (context) => const ScannerScreen(),
         '/history': (context) => const HistoryScreen(),
         '/errors': (context) => const ErrorsScreen(),
         '/statistics': (context) => const StatisticsScreen(),
+        '/scanpak/login': (context) => const ScanpakLoginScreen(),
+        '/scanpak/home': (context) => const ScanpakHomeScreen(),
         '/admin': (context) {
           final token = ModalRoute.of(context)?.settings.arguments as String?;
           if (token == null || token.isEmpty) {
