@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'scanpak_admin_panel_screen.dart';
 import 'utils/scanpak_auth.dart';
 
 class ScanpakLoginScreen extends StatefulWidget {
@@ -15,10 +16,14 @@ class ScanpakLoginScreen extends StatefulWidget {
 
 class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
   final TextEditingController _loginSurnameController = TextEditingController();
-  final TextEditingController _loginPasswordController = TextEditingController();
-  final TextEditingController _registerSurnameController = TextEditingController();
-  final TextEditingController _registerPasswordController = TextEditingController();
-  final TextEditingController _registerConfirmController = TextEditingController();
+  final TextEditingController _loginPasswordController =
+      TextEditingController();
+  final TextEditingController _registerSurnameController =
+      TextEditingController();
+  final TextEditingController _registerPasswordController =
+      TextEditingController();
+  final TextEditingController _registerConfirmController =
+      TextEditingController();
 
   bool _isRegistrationMode = false;
   bool _isLoggingIn = false;
@@ -50,10 +55,7 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({
-          'surname': surname,
-          'password': password,
-        }),
+        body: jsonEncode({'surname': surname, 'password': password}),
       );
 
       if (response.statusCode != 200) {
@@ -82,17 +84,120 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
       if (!mounted) return;
       Navigator.pushReplacementNamed(context, '/scanpak/home');
     } on http.ClientException {
-      setState(() =>
-          _loginError = 'Не вдалося зʼєднатися з сервером. Повторіть спробу');
+      setState(
+        () =>
+            _loginError = 'Не вдалося зʼєднатися з сервером. Повторіть спробу',
+      );
     } on FormatException {
       setState(() => _loginError = 'Неправильна відповідь сервера');
     } catch (_) {
-      setState(() =>
-          _loginError = 'Сталася непередбачена помилка. Повторіть спробу');
+      setState(
+        () => _loginError = 'Сталася непередбачена помилка. Повторіть спробу',
+      );
     } finally {
       if (mounted) {
         setState(() => _isLoggingIn = false);
       }
+    }
+  }
+
+  Future<void> _openAdminPanel() async {
+    final controller = TextEditingController();
+    final password = await showDialog<String?>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Вхід до панелі адміністратора СканПак'),
+          content: TextField(
+            controller: controller,
+            obscureText: true,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Пароль адміністратора',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Скасувати'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Увійти'),
+            ),
+          ],
+        );
+      },
+    );
+
+    final trimmedPassword = password?.trim() ?? '';
+    if (trimmedPassword.isEmpty) {
+      if (password != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Введіть пароль адміністратора')),
+        );
+      }
+      return;
+    }
+
+    try {
+      final response = await http.post(
+        Uri.https(kScanpakApiHost, '$kScanpakBasePath/admin_login'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'password': trimmedPassword}),
+      );
+
+      if (response.statusCode != 200) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_extractServerMessage(response))),
+        );
+        return;
+      }
+
+      final data = jsonDecode(response.body);
+      if (data is! Map<String, dynamic>) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Некоректна відповідь сервера')),
+        );
+        return;
+      }
+
+      final token = data['token']?.toString() ?? '';
+      if (token.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сервер не повернув токен доступу')),
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ScanpakAdminPanelScreen(adminToken: token),
+        ),
+      );
+    } on http.ClientException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не вдалося зʼєднатися з сервером')),
+      );
+    } on FormatException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Некоректна відповідь сервера')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сталася помилка під час входу')),
+      );
     }
   }
 
@@ -320,17 +425,29 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Align(
-                  alignment: Alignment.topLeft,
-                  child: ElevatedButton.icon(
-                    onPressed: () => Navigator.pushReplacementNamed(context, '/'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.2),
-                      foregroundColor: Colors.white,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () =>
+                          Navigator.pushReplacementNamed(context, '/'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Назад'),
                     ),
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('Назад'),
-                  ),
+                    ElevatedButton.icon(
+                      onPressed: _openAdminPanel,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.admin_panel_settings_outlined),
+                      label: const Text('Адмін панель'),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 Card(
@@ -356,9 +473,7 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
                         const SizedBox(height: 12),
                         Text(
                           'СканПак',
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
+                          style: Theme.of(context).textTheme.headlineSmall
                               ?.copyWith(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 24),
@@ -390,13 +505,14 @@ class _ScanpakLoginScreenState extends State<ScanpakLoginScreen> {
                         const SizedBox(height: 24),
                         AnimatedSwitcher(
                           duration: const Duration(milliseconds: 250),
-                          transitionBuilder: (child, animation) => FadeTransition(
-                            opacity: animation,
-                            child: SizeTransition(
-                              sizeFactor: animation,
-                              child: child,
-                            ),
-                          ),
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                                opacity: animation,
+                                child: SizeTransition(
+                                  sizeFactor: animation,
+                                  child: child,
+                                ),
+                              ),
                           child: _isRegistrationMode
                               ? _buildRegistrationForm()
                               : _buildLoginForm(),
