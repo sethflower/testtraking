@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'utils/scanpak_auth.dart';
+import 'utils/scanpak_offline_queue.dart';
 import 'utils/scanpak_user_management.dart';
 
 class ScanpakHomeScreen extends StatefulWidget {
@@ -35,9 +38,12 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   late final TabController _tabController;
+  late final Connectivity _connectivity;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   String? _userName;
   ScanpakUserRole? _userRole;
   String _status = '';
+  bool _isOnline = true;
   bool _isLoadingHistory = false;
   List<_ScanpakRecord> _records = const [];
   List<_ScanpakRecord> _filteredRecords = const [];
@@ -60,6 +66,18 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
           _focusInput();
         }
       });
+    _connectivity = Connectivity();
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
+      (results) async {
+        final online =
+            results.isNotEmpty && results.first != ConnectivityResult.none;
+        if (mounted) setState(() => _isOnline = online);
+        if (online) {
+          await ScanpakOfflineQueue.syncPending();
+        }
+      },
+    );
+    _initConnectivityStatus();
     final now = DateTime.now();
     _statsEndDate = DateTime(now.year, now.month, now.day);
     _statsStartDate = _statsEndDate?.subtract(const Duration(days: 6));
@@ -76,8 +94,18 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     _parcelFilterController.dispose();
     _userFilterController.dispose();
     _statsUserFilterController.dispose();
+    _connectivitySubscription?.cancel();
     _audioPlayer.dispose();
     super.dispose();
+  }
+
+  Future<void> _initConnectivityStatus() async {
+    final result = await _connectivity.checkConnectivity();
+    final online = result != ConnectivityResult.none;
+    if (mounted) setState(() => _isOnline = online);
+    if (online) {
+      await ScanpakOfflineQueue.syncPending();
+    }
   }
 
   Future<void> _loadUser() async {
@@ -197,24 +225,21 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
   }
 
   void _onChanged(String value) {
-    final sanitized = _sanitizeNumber(value);
-    if (sanitized != value) {
-      _numberController.value = TextEditingValue(
-        text: sanitized,
-        selection: TextSelection.collapsed(offset: sanitized.length),
-      );
+    if (_status.isNotEmpty) {
+      setState(() => _status = '');
     }
   }
 
   Future<void> _handleSubmit([String? raw]) async {
     final digits = _sanitizeNumber(raw ?? _numberController.text);
     if (digits.isEmpty) {
-      setState(() => _status = 'Введіть номер відправлення (лише цифри)');
+      setState(() => _status = 'Не знайшли цифр у введенні');
       _focusInput();
       return;
     }
 
-    setState(() => _status = 'Відправляємо...');
+    setState(() => _status =
+        _isOnline ? 'Відправляємо...' : 'Немає зв’язку — збережемо локально');
     try {
       final record = await _sendScanToBackend(digits);
       setState(() {
@@ -225,20 +250,30 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
       _playSuccessSound();
       _applyFilters();
       _applyStatsFilters();
-    } catch (e) {
+    } catch (_) {
+      await ScanpakOfflineQueue.addRecord(digits);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(e.toString())));
+        ).showSnackBar(
+          const SnackBar(
+            content: Text('Немає зв’язку або сервер недоступний. Збережено локально.'),
+          ),
+        );
       }
-      setState(() => _status = 'Сталася помилка. Спробуйте ще раз');
+      setState(() => _status = '📦 Офлайн: номер $digits збережено локально');
     }
 
+    await ScanpakOfflineQueue.syncPending();
     _numberController.clear();
     _focusInput();
   }
 
   Future<_ScanpakRecord> _sendScanToBackend(String digits) async {
+    if (!_isOnline) {
+      throw Exception('Offline');
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('scanpak_token');
     if (token == null) {
@@ -489,12 +524,42 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
             ],
           ),
         ),
-        body: TabBarView(
-          controller: _tabController,
+        body: Column(
           children: [
-            _buildScanTab(theme),
-            _buildHistoryTab(theme),
-            _buildStatsTab(theme),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              color: _isOnline ? Colors.green.shade600 : Colors.red.shade600,
+              padding: const EdgeInsets.all(6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isOnline ? Icons.wifi : Icons.wifi_off,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _isOnline
+                        ? '🟢 Підключення активне'
+                        : '🔴 Немає зв’язку з сервером',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildScanTab(theme),
+                  _buildHistoryTab(theme),
+                  _buildStatsTab(theme),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -510,7 +575,7 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
           Text('Сканування відправлень', style: theme.textTheme.headlineSmall),
           const SizedBox(height: 8),
           Text(
-            'Поле завжди активно. Відскануйте або введіть номер — після "Enter" воно очиститься і залишиться у фокусі.',
+            'Відскануйте або введіть номер — після "Enter" скан зафіксується, а поле очиститься',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: Colors.grey[700],
             ),
@@ -545,11 +610,12 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
                     controller: _numberController,
                     focusNode: _numberFocus,
                     autofocus: true,
-                    keyboardType: TextInputType.number,
+                    keyboardType: TextInputType.text,
                     textInputAction: TextInputAction.done,
                     decoration: const InputDecoration(
                       labelText: 'Номер посилки',
-                      helperText: 'Лише цифри, курсор завжди у цьому полі',
+                      helperText:
+                          'Відскануйте BoxID',
                       border: OutlineInputBorder(),
                     ),
                     onChanged: _onChanged,
@@ -594,8 +660,6 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
                 _userFilterController,
                 'Користувач',
                 enabled: !_isOperator,
-                helperText:
-                    _isOperator ? 'Доступно лише власні скани' : null,
               ),
               ElevatedButton.icon(
                 onPressed: _pickDate,
@@ -761,7 +825,7 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
                           labelText: 'Користувач',
                           helperText: _isOperator
                               ? 'Показано лише ваші скани'
-                              : 'Залиште порожнім щоб бачити всіх',
+                              : 'Введіть користувача',
                           border: const OutlineInputBorder(),
                           isDense: true,
                         ),
