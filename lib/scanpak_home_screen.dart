@@ -238,6 +238,13 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
       return;
     }
 
+    if (await _isDuplicate(digits)) {
+      setState(() => _status = 'Увага, це дублікат. Не збережено');
+      _numberController.clear();
+      _focusInput();
+      return;
+    }
+
     setState(() => _status =
         _isOnline ? 'Відправляємо...' : 'Немає зв’язку — збережемо локально');
     try {
@@ -269,6 +276,14 @@ class _ScanpakHomeScreenState extends State<ScanpakHomeScreen>
     _focusInput();
   }
 
+  Future<bool> _isDuplicate(String digits) async {
+    final alreadyScanned =
+        _records.any((existing) => existing.number.trim() == digits.trim());
+    if (alreadyScanned) return true;
+
+    return ScanpakOfflineQueue.contains(digits.trim());
+  }
+  
   Future<_ScanpakRecord> _sendScanToBackend(String digits) async {
     if (!_isOnline) {
       throw Exception('Offline');
