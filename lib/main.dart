@@ -11,6 +11,7 @@ import 'errors_screen.dart';
 import 'statistics_screen.dart';
 import 'admin_panel_screen.dart';
 import 'utils/offline_queue.dart'; // ✅ офлайн-очередь
+import 'utils/scanpak_offline_queue.dart';
 
 Future<void> main() async {
   // ✅ Обязательно инициализируем Flutter перед асинхронными вызовами
@@ -18,6 +19,7 @@ Future<void> main() async {
 
   // ✅ Инициализация локального офлайн-хранилища
   await OfflineQueue.init();
+  await ScanpakOfflineQueue.init();
 
   // ✅ Запуск приложения
   runApp(const MyApp());
