@@ -314,7 +314,7 @@ class _ScanpakAdminPanelScreenState extends State<ScanpakAdminPanelScreen> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<ScanpakUserRole>(
-                  value: selectedRole,
+                  initialValue: selectedRole,
                   decoration: const InputDecoration(
                     labelText: 'Роль користувача',
                   ),
@@ -429,7 +429,7 @@ class _ScanpakAdminPanelScreenState extends State<ScanpakAdminPanelScreen> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ScanpakUserRole>(
-              value: user.role,
+              initialValue: user.role,
               decoration: const InputDecoration(labelText: 'Змінити роль'),
               items: ScanpakUserRole.values
                   .map(
