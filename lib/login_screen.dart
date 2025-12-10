@@ -442,17 +442,29 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Align(
-                  alignment: Alignment.topRight,
-                  child: ElevatedButton.icon(
-                    onPressed: _openAdminPanel,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.2),
-                      foregroundColor: Colors.white,
+              Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed:
+                          () => Navigator.pushReplacementNamed(context, '/'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Назад'),
                     ),
-                    icon: const Icon(Icons.admin_panel_settings_outlined),
-                    label: const Text('Адмін панель'),
-                  ),
+                    ElevatedButton.icon(
+                      onPressed: _openAdminPanel,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.admin_panel_settings_outlined),
+                      label: const Text('Адмін панель'),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 Card(
