@@ -316,7 +316,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<UserRole>(
-                  value: selectedRole,
+                  initialValue: selectedRole,
                   decoration: const InputDecoration(
                     labelText: 'Роль користувача',
                   ),
@@ -435,7 +435,7 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<UserRole>(
-              value: user.role,
+              initialValue: user.role,
               decoration: const InputDecoration(labelText: 'Поточна роль'),
               items: UserRole.values
                   .map(
