@@ -31,6 +31,22 @@ class ScanpakOfflineQueue {
     }
   }
 
+  static Future<bool> contains(String digits) async {
+    if (digits.isEmpty) return false;
+    try {
+      await init();
+      final box = Hive.box(_boxName);
+      return box.values.any((value) {
+        if (value is! Map) return false;
+        final stored = value['parcel_number']?.toString();
+        return stored != null && stored.trim() == digits.trim();
+      });
+    } catch (e) {
+      print('⚠️ ScanpakOfflineQueue.contains error: $e');
+      return false;
+    }
+  }
+  
   static Future<bool> _hasConnection() async {
     final connectivityResult = await Connectivity().checkConnectivity();
     return connectivityResult != ConnectivityResult.none;
